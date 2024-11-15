@@ -1,7 +1,9 @@
 import asyncio
+import json
 
 import urwid
 import websockets
+import websockets.connection
 
 
 class ChatUI:
@@ -22,11 +24,7 @@ class ChatUI:
         self.input_box = urwid.AttrMap(self.input_edit, "input")
 
         # Top sidebar - Leaderboard (ListBox with sample data)
-        self.leaderboard_items = [
-            urwid.Text("1. Alice - 100"),
-            urwid.Text("2. Bob - 80"),
-            urwid.Text("3. Carol - 60"),
-        ]
+        self.leaderboard_items = []
         self.leaderboard_listbox = urwid.ListBox(
             urwid.SimpleListWalker(self.leaderboard_items)
         )
@@ -86,25 +84,50 @@ class ChatUI:
                 self.send_message(message)
                 self.input_edit.set_edit_text("")  # Clear input box
 
+    def update(self, message: str):
+        """Update the UI based on the message"""
+        try:
+            response = json.loads(message)
+        except:
+            print("Error parsing json")
+            return
+
+        if response["target"] == "message":
+            self.add_message(response["payload"])
+
+        elif response["target"] == "leaderboard":
+            self.update_leaderboard(response["payload"])
+
+        self.loop.draw_screen()
+
+    def update_leaderboard(self, boards: list[tuple]):
+        """Update leaderboard"""
+        boards = sorted(boards, key=lambda x: x[-1], reverse=True)
+        boards = [
+            urwid.Text(f"{idx}. {items[0]} - {items[1]}")
+            for idx, items in enumerate(boards, 1)
+        ]
+        self.leaderboard_listbox.body = urwid.SimpleListWalker(boards)
+
     def add_message(self, message):
         # Add message to chatbox
         message_widget = urwid.Text(message)
         self.messages.append(urwid.AttrMap(message_widget, None))
         self.chatbox.set_focus(len(self.messages) - 1)  # Scroll to latest message
-        self.loop.draw_screen()
 
     def send_message(self, message):
         # Call the send function of WebSocketClient to send message over WebSocket
         asyncio.ensure_future(self.websocket_client.send_message(message))
 
     def exit_program(self, button):
-        self.loop.stop()
+        asyncio.get_event_loop().stop()
 
 
 class WebSocketClient:
-    def __init__(self, uri, ui):
+    def __init__(self, uri, ui, name):
         self.uri = uri
         self.ui = ui
+        self.name = name
         self.websocket = None  # Will store the WebSocket connection
 
     async def connect(self):
@@ -112,16 +135,29 @@ class WebSocketClient:
         async with websockets.connect(self.uri) as websocket:
             self.websocket = websocket  # Store WebSocket connection
             # Start the task to listen for incoming messages
+            await self.register()
             await self.listen()
+
+    async def close(self):
+        await self.websocket.close()
+
+    async def register(self):
+        await self.websocket.send(json.dumps({"action": "register", "name": self.name}))
+
+        response = await self.websocket.recv()
+        response = json.loads(response)
+
+        if response["target"] == "error":
+            raise ValueError(f"Failed to register: {response['payload']}")
 
     async def listen(self):
         # This method continuously listens for incoming messages
         while True:
             try:
                 message = await self.websocket.recv()
-                self.ui.add_message(message)  # Update UI with incoming message
-            except websockets.ConnectionClosed:
-                print("Connection closed, retrying...")
+                self.ui.update(message)
+            except websockets.ConnectionClosedError:
+                print("Connection closed by client.")
                 break
             except Exception as e:
                 print(f"Error: {e}")
@@ -131,23 +167,27 @@ class WebSocketClient:
         # Function to send messages to the WebSocket server
         if self.websocket:
             try:
-                await self.websocket.send(message)
-                # print(
-                #     f"Sent: {message}"
-                # )  # Optionally print out the sent message for debugging
+                await self.websocket.send(
+                    json.dumps({"action": "message", "payload": message})
+                )
             except Exception as e:
                 print(f"Failed to send message: {e}")
 
 
 def start():
     # WebSocket URI
-    websocket_uri = "ws://localhost:8765"
+    # uri = input("Server URI: ")
+    name = input("Your name: ")
+
+    websocket_uri = (
+        "ws://localhost:8765"  # f"ws://{uri}" if "localhost" in uri else f"wss://{uri}"
+    )
 
     # Initialize UI and pass the WebSocketClient instance
     ui = ChatUI()  # Temporarily passing None as websocket_client
 
     # Initialize WebSocket client and pass the UI instance
-    websocket_client = WebSocketClient(websocket_uri, ui)
+    websocket_client = WebSocketClient(websocket_uri, ui, name)
     ui.websocket_client = websocket_client  # Assign the WebSocketClient instance to UI
 
     # Create asyncio event loop and run WebSocket client in background
@@ -166,8 +206,6 @@ def start():
 
     # Run the main event loop (blocking)
     main_loop.run()
-
-    start()
 
 
 if __name__ == "__main__":
