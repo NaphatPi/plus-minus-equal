@@ -16,6 +16,7 @@ async def hello(websocket):
 
 
 async def main():
+    print("Starting server ...")
     async with serve(hello, "", 8765):
         await asyncio.get_running_loop().create_future()  # run forever
 
