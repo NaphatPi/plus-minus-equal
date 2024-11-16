@@ -33,8 +33,7 @@ class ChatUI:
         self.sidebar_top = urwid.LineBox(self.leaderboard_listbox, title="Leaderboard")
 
         self.tip_items = [
-            urwid.Text("/play - to play a game"),
-            urwid.Text("/reset - to reset score"),
+            urwid.Text("/help - to see all commands"),
         ]
         self.tip_listbox = urwid.ListBox(urwid.SimpleListWalker(self.tip_items))
         self.sidebar_mid = urwid.LineBox(self.tip_listbox, title="Command - Tips")
@@ -256,8 +255,11 @@ def start():
     if "http" in config["uri"]:
         config["uri"] = config["uri"].replace("http", "ws")
 
-    if config["uri"].startswith("localhost"):
+    elif config["uri"].startswith("localhost"):
         config["uri"] = f"ws://{config['uri']}"
+
+    elif not config["uri"].startswith("ws"):
+        config["uri"] = f"wss://{config['uri']}"
 
     # Initialize UI and pass the WebSocketClient instance
     ui = ChatUI()  # Temporarily passing None as websocket_client
