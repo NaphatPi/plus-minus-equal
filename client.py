@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 import urwid
 import websockets
@@ -11,6 +12,7 @@ class ChatUI:
 
         self.websocket_client = websocket_client
         self.loop = loop
+        self.available_palette = set()
         # Chat message history
         self.messages = urwid.SimpleListWalker([])
 
@@ -66,7 +68,7 @@ class ChatUI:
         )
 
         # Header at the top of the screen
-        self.header = urwid.Text("Chat Interface", align="center")
+        self.header = urwid.Text("Plus Minus Equal", align="center")
 
         # Full layout with header, main content, and sidebars
         self.layout = urwid.Frame(header=self.header, body=self.main_content)
@@ -81,8 +83,45 @@ class ChatUI:
 
             # If message is not empty, add to the chat box
             if message.strip():
-                self.send_message(message)
+                self.process_message(message)
                 self.input_edit.set_edit_text("")  # Clear input box
+
+    def clear_screen(self):
+        """Clear chat screen"""
+        self.messages.clear()
+
+    def process_message(self, message):
+        """Process the message before sending"""
+        if message == "/help":
+            help_message = """
+----- HELP -----
+Available commands:
+1. /play <difficulty> <num-questions>
+   Desc: start a new game
+   Arguments:
+        - difficulty: easy, medium, or hard
+        - num question: number of question e.g. 3 or 10
+
+2. /stop
+   Desc: stop an ongoing game
+
+3. /reset
+   Desc: reset current leaderboard
+
+3. /set-delay <seconds>
+   Desc: set delay between questions in seconds min: 3 Max: 20 seconds
+
+4. /clear
+   Desc: clear screen
+
+5. /help
+   Desc: show help
+"""
+            self.add_message(help_message, color="help")
+        elif message == "/clear":
+            self.clear_screen()
+        else:
+            self.send_message(message)
 
     def update(self, message: str):
         """Update the UI based on the message"""
@@ -93,10 +132,13 @@ class ChatUI:
             return
 
         if response["target"] == "message":
-            self.add_message(response["payload"])
+            self.add_message(response["payload"], color=response.get("color"))
 
         elif response["target"] == "leaderboard":
             self.update_leaderboard(response["payload"])
+
+        elif response["target"] == "palette":
+            self.update_palette(response["payload"])
 
         self.loop.draw_screen()
 
@@ -109,10 +151,21 @@ class ChatUI:
         ]
         self.leaderboard_listbox.body = urwid.SimpleListWalker(boards)
 
-    def add_message(self, message):
+    def update_palette(self, palette):
+        """Update palette"""
+        for name, foreground, background in palette:
+            try:
+                self.loop.screen.register_palette_entry(name, foreground, background)
+                self.available_palette.add(name)
+            except:
+                pass
+
+    def add_message(self, message, color=None):
         # Add message to chatbox
         message_widget = urwid.Text(message)
-        self.messages.append(urwid.AttrMap(message_widget, None))
+        if color is not None and color not in self.available_palette:
+            color = None
+        self.messages.append(urwid.AttrMap(message_widget, color))
         self.chatbox.set_focus(len(self.messages) - 1)  # Scroll to latest message
 
     def send_message(self, message):
@@ -124,10 +177,11 @@ class ChatUI:
 
 
 class WebSocketClient:
-    def __init__(self, uri, ui, name):
+    def __init__(self, uri, ui, name, color):
         self.uri = uri
         self.ui = ui
         self.name = name
+        self.color = color
         self.websocket = None  # Will store the WebSocket connection
 
     async def connect(self):
@@ -142,7 +196,9 @@ class WebSocketClient:
         await self.websocket.close()
 
     async def register(self):
-        await self.websocket.send(json.dumps({"action": "register", "name": self.name}))
+        await self.websocket.send(
+            json.dumps({"action": "register", "name": self.name, "color": self.color})
+        )
 
         response = await self.websocket.recv()
         response = json.loads(response)
@@ -174,20 +230,42 @@ class WebSocketClient:
                 print(f"Failed to send message: {e}")
 
 
+def get_config() -> dict:
+    """Get config file"""
+    path = Path(__file__).parent / ".config"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.loads(f.read())
+    except Exception:
+        print("Failed to read a config file.")
+        print(f"Generating a config file at {str(path)} ...")
+        config = {
+            "uri": input("URI: "),
+            "name": input("Your name: "),
+            "color": input("Choose color `<foreground>,<background>`: "),
+        }
+        path.write_text(json.dumps(config))
+        return config
+
+
 def start():
     # WebSocket URI
     # uri = input("Server URI: ")
-    name = input("Your name: ")
+    config = get_config()
 
-    websocket_uri = (
-        "ws://localhost:8765"  # f"ws://{uri}" if "localhost" in uri else f"wss://{uri}"
-    )
+    if "http" in config["uri"]:
+        config["uri"] = config["uri"].replace("http", "ws")
+
+    if config["uri"].startswith("localhost"):
+        config["uri"] = f"ws://{config['uri']}"
 
     # Initialize UI and pass the WebSocketClient instance
     ui = ChatUI()  # Temporarily passing None as websocket_client
 
     # Initialize WebSocket client and pass the UI instance
-    websocket_client = WebSocketClient(websocket_uri, ui, name)
+    websocket_client = WebSocketClient(
+        config["uri"], ui, config["name"], config["color"]
+    )
     ui.websocket_client = websocket_client  # Assign the WebSocketClient instance to UI
 
     # Create asyncio event loop and run WebSocket client in background
@@ -199,7 +277,9 @@ def start():
 
     # Create urwid main loop and pass the UI layout
     main_loop = urwid.MainLoop(
-        ui.layout, unhandled_input=ui.handle_input, event_loop=urwid_loop
+        ui.layout,
+        unhandled_input=ui.handle_input,
+        event_loop=urwid_loop,
     )
 
     ui.loop = main_loop

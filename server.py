@@ -56,9 +56,9 @@ def start_game(command):
     game.active = True
 
 
-def format_message(payload, target):
+def format_message(payload, target, color=None):
     """Format json message"""
-    return json.dumps({"target": target, "payload": payload})
+    return json.dumps({"target": target, "payload": payload, "color": color})
 
 
 def announce(message, name=None, target="message"):
@@ -66,7 +66,9 @@ def announce(message, name=None, target="message"):
     broadcast(
         db.conn,
         format_message(
-            target=target, payload=f"{name}: {message}" if name else message
+            target=target,
+            payload=f"{name}: {message}" if name else message,
+            color=name,
         ),
     )
 
@@ -78,10 +80,12 @@ def server_announce(message):
 async def proceed_game():
     """Process game to the next question"""
     try:
-        server_announce(
-            rf"Question {game.cur_q} will start in {game.interval_time} seconds. \\(^_^)//"
-        )
-        await asyncio.sleep(game.interval_time - game.count_down_time)
+        delay = game.interval_time - game.count_down_time
+        if delay > 0:
+            server_announce(
+                rf"Question {game.cur_q} will start in {game.interval_time} seconds. \\(^_^)//"
+            )
+            await asyncio.sleep(game.interval_time - game.count_down_time)
 
         for i in range(game.count_down_time, 0, -1):
             server_announce(
@@ -137,17 +141,40 @@ async def check_answer(answer: str, name: str):
         server_announce(f"Answer {answer} is incorrect - {name}. Try again 🙊")
 
 
-def update_leaderboard(boards):
+def update_leaderboard(scores: dict):
     """Update leaderboard on the server and braodcast to everyone connected"""
     print("Updating leader board")
-    for user, score in boards:
-        db.users[user]["score"] += score
+    new_boards = []
 
-    sorted_score = sorted(db.users.items(), key=lambda x: x[-1]["score"], reverse=True)
-    db.leaderboad = [(user, info["score"]) for user, info in sorted_score]
+    # Current user in score board
+    for user, score in db.leaderboad:
+        if user in scores:
+            score += scores[user]
+            del scores[user]
+        new_boards.append((user, score))
+
+    # New users to be added to score board
+    for user, score in scores.items():
+        new_boards.append((user, score))
+
+    db.leaderboad = sorted(new_boards, key=lambda x: x[-1], reverse=True)
     announce(db.leaderboad, target="leaderboard")
     server_announce("The leaderboard has been updated!")
     print("Leaderboard has been updated", db.leaderboad)
+
+
+def reset_leaderboard():
+    """Reset leader board and user score"""
+    db.leaderboad = []
+    announce(db.leaderboad, target="leaderboard")
+    server_announce("The leaderboard has been reset!")
+    print("Leaderboard has been reset!")
+
+
+def update_palette(palette):
+    """Update palette of all users"""
+    print("updating palette")
+    announce(palette, target="palette")
 
 
 async def check_num_user():
@@ -156,7 +183,32 @@ async def check_num_user():
         await stop_game()
 
 
-async def register(ws, name: str):
+def get_all_palette():
+    """Initialize palette for a new user"""
+    palette = [("SERVER", "dark green", ""), ("help", "yellow", "")]
+
+    for user, info in db.users.items():
+        if info["active"]:
+            palette.append((user, info["foreground"], info["background"]))
+
+    print("all palette is", palette)
+    return palette
+
+
+def parse_color(color: str):
+    """parse color string to foreground and background"""
+    if color is None or color == "":
+        return "", ""
+
+    colors = color.split(",")
+
+    if len(colors) == 1:
+        return colors[0].strip(), ""
+
+    return colors[0].strip(), colors[1].strip()
+
+
+async def register(ws, name: str, color: str):
     """Register new user"""
     if game.active:
         await ws.send(
@@ -172,18 +224,22 @@ async def register(ws, name: str):
         )
         return
 
-    db.conn[ws] = name
+    db.users[name] = {"active": True}
 
-    if not db.users.get(name):
-        db.users[name] = {"score": 0}
-
-    db.users[name]["active"] = True
+    foreground, background = parse_color(color)
+    db.users[name]["foreground"] = foreground
+    db.users[name]["background"] = background
 
     try:
         await ws.send(format_message(target="register", payload="success"))
+        await ws.send(format_message(target="palette", payload=get_all_palette()))
         await ws.send(format_message(target="leaderboard", payload=db.leaderboad))
-        server_announce(f"User {name} has join the room")
 
+        update_palette([(name, foreground, background)])
+
+        db.conn[ws] = name
+
+        server_announce(f"User {name} has join the room")
         print(f"User {name} has joined the room")
         await ws.wait_closed()
     finally:
@@ -223,7 +279,7 @@ async def stop_game():
             server_announce("The scores are tied!")
 
         if sum(score for _, score in score_board) > 0:
-            update_leaderboard(score_board)
+            update_leaderboard(game.user_score)
 
     game.stopping = False
 
@@ -251,6 +307,25 @@ async def resolve_command(command: str, name: str):
             server_announce(
                 "Failed to start game. Hint: use `/play <difficulty> <num-questions>`."
             )
+    elif command == "/reset":
+        reset_leaderboard()
+
+    elif command.startswith("/set-delay"):
+        try:
+            _, _time = command.split()
+            time = int(_time)
+            bound = (3, 20)
+            if time < bound[0]:
+                server_announce(f"Delay time can't be lower than {bound[0]}")
+            elif time > bound[1]:
+                server_announce(f"Delay time can't be lower than {bound[1]}")
+            else:
+                game.interval_time = time
+                server_announce(
+                    f"The delay time between questions has been set to {time} second(s)"
+                )
+        except:
+            server_announce("Failed to set delay time. Hint: Use `/set-delay <second>`")
 
 
 async def hello(websocket):
@@ -268,7 +343,7 @@ async def hello(websocket):
             continue
 
         if request["action"] == "register":
-            asyncio.create_task(register(websocket, request["name"]))
+            asyncio.create_task(register(websocket, request["name"], request["color"]))
 
         if websocket in db.conn:
             if request["action"] == "message":
