@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import urwid
@@ -229,9 +230,11 @@ class WebSocketClient:
                 print(f"Failed to send message: {e}")
 
 
-def get_config() -> dict:
+def get_config(config_path) -> dict:
     """Get config file"""
-    path = Path(__file__).parent / ".config"
+    path = (
+        Path(__file__).parent / ".config" if config_path is None else Path(config_path)
+    )
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.loads(f.read())
@@ -250,7 +253,12 @@ def get_config() -> dict:
 def start():
     # WebSocket URI
     # uri = input("Server URI: ")
-    config = get_config()
+    if len(sys.argv) > 1:
+        config_path = sys.argv[1]
+    else:
+        config_path = None
+
+    config = get_config(config_path)
 
     if "http" in config["uri"]:
         config["uri"] = config["uri"].replace("http", "ws")
