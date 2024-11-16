@@ -89,7 +89,7 @@ async def proceed_game():
 
         for i in range(game.count_down_time, 0, -1):
             server_announce(
-                f"Question {game.cur_q} will start in {i} seconds."
+                f"Question {game.cur_q} will start in {i} seconds. "
                 + (r"\\(^_^)\\" if i % 2 == 0 else r"//(^_^)//")
             )
             await asyncio.sleep(1)
